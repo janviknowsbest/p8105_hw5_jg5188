@@ -1,9 +1,4 @@
----
-title: "p8105_hw5_jg5188"
-author: "jg5188"
-date: "2026-11-19"
-output: html_document
----
+
 ---
 title: "P8105 Homework 5"
 author: "Janvi Garg"
