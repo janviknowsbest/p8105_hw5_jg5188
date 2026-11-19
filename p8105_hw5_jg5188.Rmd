@@ -1,0 +1,81 @@
+---
+title: "p8105_hw5_jg5188"
+author: "jg5188"
+date: "2026-11-19"
+output: html_document
+---
+---
+title: "P8105 Homework 5"
+author: "Janvi Garg"
+date: "`r Sys.Date()`"
+output: github_document
+---
+
+```{r setup, message = FALSE}
+library(tidyverse)
+library(broom)
+
+set.seed(8105)
+
+knitr::opts_chunk$set(
+  fig.width = 8,
+  fig.asp = 0.6,
+  out.width = "90%"
+)
+
+theme_set(
+  theme_minimal(base_size = 14) +
+    theme(legend.position = "bottom")
+)
+```
+## Problem 1
+
+The function below draws a birthday for each of `group_size` people, sampling uniformly from 365 days with replacement, and returns `TRUE` if any birthday appears more than once.
+
+```{r birthday_function}
+has_shared_birthday = function(group_size) {
+  birthdays = sample(1:365, size = group_size, replace = TRUE)
+
+  any(duplicated(birthdays))
+}
+```
+
+I run the function 10,000 times for every group size between 2 and 50. Because each run returns a logical value, the mean across runs is the estimated probability that at least two people share a birthday.
+
+```{r birthday_simulation}
+birthday_df =
+  expand_grid(
+    group_size = 2:50,
+    iter = 1:10000
+  ) |>
+  mutate(shared = map_lgl(group_size, has_shared_birthday)) |>
+  group_by(group_size) |>
+  summarize(prob_shared = mean(shared))
+```
+
+```{r birthday_plot}
+birthday_df |>
+  ggplot(aes(x = group_size, y = prob_shared)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "steelblue") +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "grey40") +
+  labs(
+    title = "Probability that at least two people share a birthday",
+    x = "Group size",
+    y = "Estimated probability (10,000 simulations)"
+  )
+```
+
+```{r birthday_summary, include = FALSE}
+first_over_half =
+  birthday_df |>
+  filter(prob_shared >= 0.5) |>
+  slice_min(group_size) |>
+  pull(group_size)
+
+prob_at_23 = birthday_df |> filter(group_size == 23) |> pull(prob_shared)
+prob_at_50 = birthday_df |> filter(group_size == 50) |> pull(prob_shared)
+```
+
+The probability of a shared birthday rises quickly and nonlinearly with group size. It is close to zero for very small groups, first passes 0.5 at a group size of `r first_over_half` (estimated probability `r round(prob_at_23, 3)` at 23 people), and reaches `r round(prob_at_50, 3)` with 50 people. This is much faster than intuition suggests because the number of possible pairs grows roughly with the square of the group size, so even a modest group contains many chances for a match. The curve flattens near 1 for the largest groups.
+
