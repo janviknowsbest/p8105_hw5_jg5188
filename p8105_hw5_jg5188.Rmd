@@ -79,3 +79,179 @@ prob_at_50 = birthday_df |> filter(group_size == 50) |> pull(prob_shared)
 
 The probability of a shared birthday rises quickly and nonlinearly with group size. It is close to zero for very small groups, first passes 0.5 at a group size of `r first_over_half` (estimated probability `r round(prob_at_23, 3)` at 23 people), and reaches `r round(prob_at_50, 3)` with 50 people. This is much faster than intuition suggests because the number of possible pairs grows roughly with the square of the group size, so even a modest group contains many chances for a match. The curve flattens near 1 for the largest groups.
 
+## Problem 2
+
+I start with a dataframe of all file names in the `data` subdirectory, then use `purrr::map` to read each participant's file into a list column.
+
+```{r read_study_data, message = FALSE}
+study_df =
+  tibble(file_name = list.files("data", pattern = "\\.csv$")) |>
+  mutate(data = map(file.path("data", file_name), read_csv))
+```
+
+To tidy the result, I extract the arm and subject ID from the file name, unnest the weekly observations, and pivot from wide to long format so that each row is one subject in one week.
+
+```{r tidy_study_data}
+study_tidy =
+  study_df |>
+  mutate(file_name = str_remove(file_name, "\\.csv$")) |>
+  separate(file_name, into = c("arm", "subject_id"), sep = "_") |>
+  mutate(
+    arm = recode(arm, con = "Control", exp = "Experimental"),
+    subject_id = str_c(arm, " ", subject_id)
+  ) |>
+  unnest(data) |>
+  pivot_longer(
+    week_1:week_8,
+    names_to = "week",
+    names_prefix = "week_",
+    values_to = "observation"
+  ) |>
+  mutate(week = as.numeric(week))
+
+study_tidy
+```
+
+```{r spaghetti_plot}
+study_tidy |>
+  ggplot(aes(x = week, y = observation, group = subject_id, color = arm)) +
+  geom_line(alpha = 0.7) +
+  geom_point(alpha = 0.7) +
+  scale_x_continuous(breaks = 1:8) +
+  labs(
+    title = "Observations for each subject over eight weeks",
+    x = "Week",
+    y = "Observation",
+    color = "Study arm"
+  )
+```
+
+```{r arm_summary, include = FALSE}
+arm_means =
+  study_tidy |>
+  filter(week %in% c(1, 8)) |>
+  group_by(arm, week) |>
+  summarize(mean_obs = mean(observation), .groups = "drop")
+
+get_mean = function(arm_name, week_number) {
+  arm_means |>
+    filter(arm == arm_name, week == week_number) |>
+    pull(mean_obs) |>
+    round(2)
+}
+```
+
+At week 1 the two arms look similar, with mean observations of `r get_mean("Control", 1)` in the control arm and `r get_mean("Experimental", 1)` in the experimental arm. Over the following weeks, subjects in the experimental arm show a clear upward trend, reaching a mean of `r get_mean("Experimental", 8)` by week 8. Subjects in the control arm stay roughly flat over time, ending at a mean of `r get_mean("Control", 8)`. By week 8 every experimental subject has a higher value than every control subject, which suggests the intervention is associated with increasing observations over time. Within each arm, individual subjects still vary noticeably from week to week.
+
+## Problem 3
+
+I fix the design elements at $n = 30$ and $\sigma = 5$. The function below generates one dataset from $x \sim N(\mu, \sigma)$, runs a one-sample t-test of $H_0: \mu = 0$, and uses `broom::tidy` to keep the estimate $\hat{\mu}$ and the p-value.
+
+```{r power_function}
+sim_t_test = function(mu, n = 30, sigma = 5) {
+  sim_data = rnorm(n, mean = mu, sd = sigma)
+
+  t.test(sim_data, mu = 0) |>
+    tidy() |>
+    select(mu_hat = estimate, p_value = p.value)
+}
+```
+
+I generate 5,000 datasets for each true value $\mu \in \{0, 1, 2, 3, 4, 5, 6\}$ and record whether the null is rejected at $\alpha = 0.05$.
+
+```{r power_simulation}
+alpha = 0.05
+
+power_sim_df =
+  expand_grid(
+    true_mu = 0:6,
+    iter = 1:5000
+  ) |>
+  mutate(results = map(true_mu, sim_t_test)) |>
+  unnest(results) |>
+  mutate(rejected = p_value < alpha)
+```
+
+```{r power_plot}
+power_df =
+  power_sim_df |>
+  group_by(true_mu) |>
+  summarize(power = mean(rejected))
+
+power_df |>
+  ggplot(aes(x = true_mu, y = power)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "steelblue", size = 2) +
+  geom_hline(yintercept = alpha, linetype = "dashed", color = "grey40") +
+  scale_x_continuous(breaks = 0:6) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Power of a one-sample t-test (n = 30, sigma = 5)",
+    x = "True value of mu",
+    y = "Proportion of tests rejecting the null"
+  )
+```
+
+```{r power_values, include = FALSE}
+get_power = function(mu_value) {
+  power_df |>
+    filter(true_mu == mu_value) |>
+    pull(power) |>
+    round(3)
+}
+```
+
+Power increases with effect size. When $\mu = 0$ the null is true, so the rejection rate of `r get_power(0)` is the type I error rate and sits close to $\alpha = 0.05$. Power rises steeply through the middle of the range, from `r get_power(1)` at $\mu = 1$ to `r get_power(3)` at $\mu = 3$, and approaches 1 for $\mu \ge 4$ (`r get_power(4)` at $\mu = 4$). Because the standardized effect size is $\mu / \sigma$, larger true means are farther from the null relative to the noise in the data, so a false null is rejected more often. The curve is S shaped, with the largest gains in power at moderate effect sizes.
+
+```{r estimate_plot}
+estimate_df =
+  power_sim_df |>
+  group_by(true_mu) |>
+  summarize(
+    all_samples = mean(mu_hat),
+    rejected_samples = mean(mu_hat[rejected])
+  ) |>
+  pivot_longer(
+    all_samples:rejected_samples,
+    names_to = "sample_set",
+    values_to = "avg_mu_hat"
+  ) |>
+  mutate(
+    sample_set = recode(
+      sample_set,
+      all_samples = "All samples",
+      rejected_samples = "Samples where the null was rejected"
+    )
+  )
+
+estimate_df |>
+  ggplot(aes(x = true_mu, y = avg_mu_hat, color = sample_set)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "grey40") +
+  geom_line() +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 0:6) +
+  scale_y_continuous(breaks = 0:6) +
+  labs(
+    title = "Average estimate of mu compared with the true mu",
+    x = "True value of mu",
+    y = "Average estimate of mu",
+    color = NULL
+  )
+```
+
+```{r estimate_values, include = FALSE}
+rejected_label = "Samples where the null was rejected"
+
+get_estimate = function(mu_value, set_name) {
+  estimate_df |>
+    filter(true_mu == mu_value, sample_set == set_name) |>
+    pull(avg_mu_hat) |>
+    round(2)
+}
+```
+
+Across all samples, the average $\hat{\mu}$ falls on the dashed identity line for every value of $\mu$, because the sample mean is an unbiased estimator of the true mean.
+
+Among only the samples where the null was rejected, the average $\hat{\mu}$ is not approximately equal to the true $\mu$ when power is low or moderate. For example, it is `r get_estimate(1, rejected_label)` when $\mu = 1$ and `r get_estimate(2, rejected_label)` when $\mu = 2$. This happens because rejection depends on the estimate itself. With $n = 30$ and $\sigma = 5$, the null is only rejected when $|\hat{\mu}|$ is larger than about $t_{0.975, 29} \cdot s / \sqrt{30} \approx 1.87$, so conditioning on rejection keeps only the samples that happened to overestimate the effect. This selection effect is sometimes called the winner's curse.
+
+As $\mu$ increases, power approaches 1, almost every sample is rejected, and the conditional average converges to the true value (`r get_estimate(4, rejected_label)` at $\mu = 4$ and `r get_estimate(6, rejected_label)` at $\mu = 6$). When $\mu = 0$, rejected samples are split between large positive and large negative estimates, so their average stays much closer to 0 than any individual rejected estimate.
